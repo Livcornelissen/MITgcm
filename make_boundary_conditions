@@ -1,0 +1,486 @@
+# -*- coding: utf-8 -*-
+"""
+
+Created on Wed Apr 17 14:34:46 2024
+
+@author: cornelissenl
+
+Make boundary conditions
+
+"""
+
+
+
+
+import pandas as pd
+import numpy as np
+
+import matplotlib.pyplot as plt
+import xarray as xr
+import gsw
+import os
+from glob import glob
+import sys
+import os
+import datetime
+
+
+
+import random
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+# from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+from datetime import date, timedelta
+from scipy.interpolate import griddata
+from datetime import datetime
+import matplotlib as mpl
+import cmocean
+
+from pyproj import Transformer
+
+# import matplotlib.ticker as mticker
+# import matplotlib.patheffects as pe
+# import matplotlib.dates as mdates
+
+
+import xmitgcm as MIT
+import MITgcmutils
+
+#update path to the corresponding python file.
+sys.path.append( '/Users/cornelissenl/OneDrive - NIWA/PhD/MITgcm/pythonfiles' )
+from ps_ll import xy2ll,ll2xy
+from ncbinary import read_binary,write_binary
+
+
+#%%
+data_path  = '/Users/cornelissenl/OneDrive - NIWA/PhD/MITgcm/model_output_apr_2024/'
+export_path = '/Users/cornelissenl/OneDrive - NIWA/PhD/MITgcm/Glorys/'
+input_path = '/Users/cornelissenl/OneDrive - NIWA/PhD/MITgcm/model_setup/'
+
+
+file = export_path+ 'mercatorglorys12v1_gl12_mean_201501.nc'
+
+#import grid of domain:
+XC = read_binary(data_path + 'XC.data',grid_sizes=[600,440],dimensions='xy',prec = 64,endian = 'big')
+YC = read_binary(data_path + 'YC.data',grid_sizes=[600,440],dimensions='xy',prec = 64,endian = 'big')
+RC = read_binary(data_path + 'RC.data',grid_sizes=[1,1,56],dimensions='xyz',prec = 64,endian = 'big')[:,0,0]
+
+hFacS = read_binary(data_path + 'hFacS.data',grid_sizes=[600,440,56],dimensions='xyz',prec = 64,endian = 'big')
+hFacW = read_binary(data_path + 'hFacW.data',grid_sizes=[600,440,56],dimensions='xyz',prec = 64,endian = 'big')
+
+
+# variable = 'thetao'
+
+ds = xr.open_dataset(file)
+
+# depth = ds.depth.values
+
+lon = ds.longitude.sel(longitude = slice(160,175))
+lat = ds.latitude.sel(latitude = slice(-77,-72))
+var = ds.sel(longitude = slice(160,175),latitude = slice(-77,-72), time = ds.time[0])#[variable][0]
+depth = -1*ds.depth.values
+
+
+#%%
+# turn into ps
+lonm,latm,zm = np.meshgrid(lon,lat,depth)
+
+def swaps(grid):
+    grid = np.swapaxes(grid,0,2)
+    grid = np.swapaxes(grid,1,2)
+    print(grid.shape)
+    return(grid)
+    
+
+# turn ll into ps
+
+x,y = ll2xy(latm,lonm)
+xc,yc = ll2xy(YC,XC)
+
+# glorys grid:
+xs = swaps(x)
+ys = swaps(y)
+zs = swaps(zm)
+
+
+x = xs.flatten()
+y = ys.flatten()
+z = zs.flatten()
+points = np.array([z,y,x]).T
+
+
+# 2D points
+
+lon2d,lat2d = np.meshgrid(lon,lat)
+
+# turn ll into ps
+
+x2d,y2d = ll2xy(lat2d,lon2d)
+
+# glorys grid:
+
+x2d = x2d.flatten()
+y2d = y2d.flatten()
+
+points2d = np.array([y2d,x2d]).T
+
+
+
+# model points 
+
+#northern boundary:
+xnorth = np.array([xc[-1,:].tolist()]*56).T.flatten()
+ynorth = np.array([yc[-1,:].tolist()]*56).T.flatten()
+znorth = (np.array(([RC.tolist()]*600))).flatten()
+hFacSnorth = hFacS[:,-1,:]
+hFacSnorth[np.where(hFacSnorth>0)] = 1
+
+
+# Soutern boundary:
+xsouth = np.array([xc[0,:].tolist()]*56).T.flatten()
+ysouth = np.array([yc[0,:].tolist()]*56).T.flatten()
+zsouth = (np.array(([RC.tolist()]*600))).flatten()
+hFacSsouth = hFacS[:,0,:]
+hFacSsouth[np.where(hFacSsouth>0)] = 1
+
+# eastern boundary:
+xeast= np.array([xc[:,-1].tolist()]*56).T.flatten()
+yeast = np.array([yc[:,-1].tolist()]*56).T.flatten()
+zeast = (np.array(([RC.tolist()]*440))).flatten()
+hFacWeast= hFacW[:,:,-1]
+hFacWeast[np.where(hFacWeast>0)] = 1
+
+
+# model points 2D
+
+#northern boundary:
+xnorth2D = np.array([xc[-1,:].tolist()]).flatten()
+ynorth2D = np.array([yc[-1,:].tolist()]).flatten()
+hFacSnorth2D = hFacS[0,-1,:]
+hFacSnorth2D[np.where(hFacSnorth2D>0)] = 1
+
+
+# Soutern boundary:
+xsouth2D = np.array([xc[0,:].tolist()]).flatten()
+ysouth2D = np.array([yc[0,:].tolist()]).flatten()
+hFacSsouth2D = hFacS[0,0,:]
+hFacSsouth2D[np.where(hFacSsouth2D>0)] = 1
+
+# eastern boundary:
+xeast2D = np.array([xc[:,-1].tolist()]).flatten()
+yeast2D = np.array([yc[:,-1].tolist()]).flatten()
+hFacWeast2D = hFacW[0,:,-1]
+hFacWeast2D[np.where(hFacWeast2D>0)] = 1
+
+#%%
+def fillin_ns(var):
+    var = var.reshape([600,56]).T
+    for z in range(var.shape[0]):
+        for x in range(var.shape[1]-2,-1,-1):
+            if np.isnan(var[z,x]):
+                var[z,x] = var[z,x+1]
+    for x in range(var.shape[1]):
+        for z in range(1,var.shape[0]):
+            if np.isnan(var[z,x]):
+                var[z,x] = var[z-1,x]
+    return(var)
+
+
+def fillin_e(var):
+    var = var.reshape([440,56]).T
+   
+    for x in range(var.shape[1]):
+        for z in range(1,var.shape[0]):
+            if np.isnan(var[z,x]):
+                var[z,x] = var[z-1,x]
+    return(var)
+
+def fillin_2d(var):
+    # var = var.reshape([1,600])
+    # var = var[0]
+    for x in range(var.shape[0]-2,-1,-1):
+        if np.isnan(var[x]):
+            var[x] = var[x+1]
+    
+    return(var)
+
+def fillnan(var):
+    var[np.where(np.isnan(var))] = 0
+    return(var)
+
+
+def swap3D(data):
+    data = np.swapaxes(data,0,2) 
+    # data = np.swapaxes(data,1,2)
+    return(data)
+
+# points = np.array(depth,lat,lon)
+# grid in model
+#%%
+
+
+# list the glorys files
+path ='/Users/cornelissenl/OneDrive - NIWA/PhD/MITgcm/Glorys/'
+files = sorted(glob(path+'*.nc'))
+
+timesteps = len(files)
+
+# shape of boundaries, with timelength the length of the domain.
+T_north_all = np.zeros([600,56,timesteps])
+T_south_all = np.zeros([600,56,timesteps])
+T_east_all = np.zeros([440,56,timesteps])
+
+
+S_north_all = np.zeros([600,56,timesteps])
+S_south_all = np.zeros([600,56,timesteps])
+S_east_all = np.zeros([440,56,timesteps])
+
+U_north_all = np.zeros([600,56,timesteps])
+U_south_all = np.zeros([600,56,timesteps])
+U_east_all = np.zeros([440,56,timesteps])
+
+V_north_all = np.zeros([600,56,timesteps])
+V_south_all = np.zeros([600,56,timesteps])
+V_east_all = np.zeros([440,56,timesteps])
+
+
+SIheff_north_all = np.zeros([600,timesteps] )     #si thinkness
+SIarea_north_all = np.zeros([600,timesteps])
+SIuice_north_all = np.zeros([600,timesteps])
+SIvice_north_all = np.zeros([600,timesteps])
+                            
+                            
+SIheff_south_all = np.zeros([600,timesteps] )     #si thinkness
+SIarea_south_all = np.zeros([600,timesteps])
+SIuice_south_all = np.zeros([600,timesteps])
+SIvice_south_all = np.zeros([600,timesteps])
+
+SIheff_east_all = np.zeros([440,timesteps])    #si thinkness
+SIarea_east_all = np.zeros([440,timesteps])
+SIuice_east_all = np.zeros([440,timesteps])
+SIvice_east_all = np.zeros([440,timesteps])
+
+
+t = 0 
+for f in files:
+    
+    ds = xr.open_dataset(f)
+
+    var = ds.sel(longitude = slice(160,175),latitude = slice(-77,-72), time = ds.time[0])#[variable][0]
+    
+
+    T_north = griddata(points, var.thetao.values.flatten(), (znorth,ynorth,xnorth), method='nearest')
+    T_south = griddata(points, var.thetao.values.flatten(), (zsouth,ysouth,xsouth), method='nearest')
+    T_east = griddata(points, var.thetao.values.flatten(), (zeast,yeast,xeast), method='nearest')
+    
+    S_north = griddata(points, var.so.values.flatten(), (znorth,ynorth,xnorth), method='nearest')
+    S_south = griddata(points, var.so.values.flatten(), (zsouth,ysouth,xsouth), method='nearest')
+    S_east = griddata(points, var.so.values.flatten(), (zeast,yeast,xeast), method='nearest')
+    
+    U_north = griddata(points, var.uo.values.flatten(), (znorth,ynorth,xnorth), method='nearest')
+    U_south = griddata(points, var.uo.values.flatten(), (zsouth,ysouth,xsouth), method='nearest')
+    U_east = griddata(points, var.uo.values.flatten(), (zeast,yeast,xeast), method='nearest')
+    
+    V_north = griddata(points, var.vo.values.flatten(), (znorth,ynorth,xnorth), method='nearest')
+    V_south = griddata(points, var.vo.values.flatten(), (zsouth,ysouth,xsouth), method='nearest')
+    V_east = griddata(points, var.vo.values.flatten(), (zeast,yeast,xeast), method='nearest')
+    
+    
+    SIheff_north= griddata(points2d, var.sithick.values.flatten(), (ynorth2D,xnorth2D), method='nearest')
+    SIarea_north= griddata(points2d, var.siconc.values.flatten(), (ynorth2D,xnorth2D), method='nearest')
+    SIuice_north= griddata(points2d, var.usi.values.flatten(), (ynorth2D,xnorth2D), method='nearest')
+    SIvice_north= griddata(points2d, var.vsi.values.flatten(), (ynorth2D,xnorth2D), method='nearest')
+                                
+                                
+    SIheff_south= griddata(points2d, var.sithick.values.flatten(), (ysouth2D,xsouth2D), method='nearest')
+    SIarea_south= griddata(points2d, var.siconc.values.flatten(), (ysouth2D,xsouth2D), method='nearest')
+    SIuice_south= griddata(points2d, var.usi.values.flatten(), (ysouth2D,xsouth2D), method='nearest')
+    SIvice_south= griddata(points2d, var.vsi.values.flatten(), (ysouth2D,xsouth2D), method='nearest')
+
+    SIheff_east= griddata(points2d, var.sithick.values.flatten(), (yeast2D,xeast2D), method='nearest')
+    SIarea_east= griddata(points2d, var.siconc.values.flatten(), (yeast2D,xeast2D), method='nearest')
+    SIuice_east= griddata(points2d, var.usi.values.flatten(), (yeast2D,xeast2D), method='nearest')
+    SIvice_east= griddata(points2d, var.vsi.values.flatten(), (yeast2D,xeast2D), method='nearest')
+    
+
+    
+    T_north = fillin_ns(T_north)
+    T_south = fillin_ns(T_south)
+    S_north= fillin_ns(S_north)
+    S_south = fillin_ns(S_south)
+    
+
+    U_north = fillin_ns(U_north)
+    U_south = fillin_ns(U_south)
+    V_north = fillin_ns(V_north)
+    V_south = fillin_ns(V_south)
+    
+    T_east = fillin_e(T_east)
+    S_east = fillin_e(S_east)
+    U_east = fillin_e(U_east)
+    V_east = fillin_e(V_east)
+    
+    
+    #masking the velocities
+    
+    U_north  = U_north * hFacSnorth
+    V_north  = V_north * hFacSnorth
+    
+    U_south = U_south* hFacSsouth
+    V_south = V_south* hFacSsouth
+    
+    U_east = U_east* hFacWeast
+    V_east = V_east* hFacWeast
+    
+    T_north_all[:,:,t] = T_north.T
+    T_south_all[:,:,t] = T_south.T
+    T_east_all[:,:,t] = T_east.T
+
+
+    S_north_all[:,:,t] = S_north.T
+    S_south_all[:,:,t] = S_south.T
+    S_east_all[:,:,t] = S_east.T
+
+    U_north_all[:,:,t] = U_north.T
+    U_south_all[:,:,t] = U_south.T
+    U_east_all[:,:,t] = U_east.T
+
+    V_north_all[:,:,t] = V_north.T
+    V_south_all[:,:,t] = V_south.T
+    V_east_all[:,:,t] = V_east.T
+    
+    
+    """""""""""""""""""""""""""""""""""""  seaicedouble  """""""""""""""""""""""""""""""""""""
+    
+    SIheff_north = fillin_2d(SIheff_north)
+    SIarea_north = fillin_2d(SIarea_north)
+    SIuice_north = fillin_2d(SIuice_north)
+    SIvice_north = fillin_2d(SIvice_north)
+    
+    SIheff_south = fillin_2d(SIheff_south)
+    SIarea_south = fillin_2d(SIarea_south)
+    SIuice_south = fillin_2d(SIuice_south)
+    SIvice_south = fillin_2d(SIvice_south)
+
+    
+    
+    SIuice_north  = SIuice_north * hFacSnorth2D
+    SIvice_north  = SIvice_north * hFacSnorth2D
+    
+    SIuice_south = SIuice_south* hFacSsouth2D
+    SIvice_south = SIvice_south* hFacSsouth2D
+    
+    SIheff_north = fillnan(SIheff_north)
+    SIheff_south = fillnan(SIheff_south)
+    SIheff_east = fillnan(SIheff_east)
+    
+    SIarea_north = fillnan(SIarea_north)
+    SIarea_south = fillnan(SIarea_south)
+    SIarea_east = fillnan(SIarea_east)
+    
+    SIuice_north = fillnan(SIuice_north)
+    SIuice_south = fillnan(SIuice_south)
+    SIuice_east = fillnan(SIuice_east)
+    
+    SIvice_north = fillnan(SIvice_north)
+    SIvice_south = fillnan(SIvice_south)
+    SIvice_east = fillnan(SIvice_east)
+    
+    SIheff_north_all[:,t] = SIheff_north    #si thinkness
+    SIarea_north_all[:,t] = SIarea_north 
+    SIuice_north_all[:,t] = SIuice_north 
+    SIvice_north_all[:,t] = SIvice_north 
+
+    
+    SIheff_south_all[:,t] = SIheff_south     #si thinkness
+    SIarea_south_all[:,t] = SIarea_south 
+    SIuice_south_all[:,t] = SIuice_south 
+    SIvice_south_all[:,t] = SIvice_south 
+    
+    SIheff_east_all[:,t] = SIheff_east     #si thinkness
+    SIarea_east_all[:,t] = SIarea_east 
+    SIuice_east_all[:,t] = SIuice_east 
+    SIvice_east_all[:,t] = SIvice_east 
+                               
+
+    t+=1
+    if isinstance(t//12, int):
+        print('year',1993+t//12)
+
+
+
+
+
+T_north_all = swap3D(T_north_all)
+T_south_all = swap3D(T_south_all)
+T_east_all = swap3D(T_east_all)
+
+
+S_north_all = swap3D(S_north_all)
+S_south_all = swap3D(S_south_all)
+S_east_all = swap3D(S_east_all)
+
+U_north_all = swap3D(U_north_all)
+U_south_all = swap3D(U_south_all)
+U_east_all = swap3D(U_east_all)
+
+V_north_all = swap3D(V_north_all)
+V_south_all = swap3D(V_south_all)
+V_east_all = swap3D(V_east_all)
+
+    
+
+print('')
+
+
+"""output into file"""
+
+
+MIT.utils.write_to_binary(flatdata = T_north_all.flatten() ,fileout = input_path+'OB_N_t_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = S_north_all.flatten() ,fileout = input_path+'OB_N_s_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = U_north_all.flatten() ,fileout = input_path+'OB_N_u_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = V_north_all.flatten() ,fileout = input_path+'OB_N_v_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIheff_north_all.flatten() ,fileout = input_path+'OB_N_h_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIarea_north_all.flatten() ,fileout = input_path+'OB_N_a_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIuice_north_all.flatten() ,fileout = input_path+'OB_N_uice_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIvice_north_all.flatten() ,fileout = input_path+'OB_N_vice_glorys_1993_2023.tnb',dtype ='float64')
+
+MIT.utils.write_to_binary(flatdata = T_south_all.flatten() ,fileout = input_path+'OB_S_t_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = S_south_all.flatten() ,fileout = input_path+'OB_S_s_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = U_south_all.flatten() ,fileout = input_path+'OB_S_u_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = V_south_all.flatten() ,fileout = input_path+'OB_S_v_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIheff_south_all.flatten() ,fileout = input_path+'OB_S_h_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIarea_south_all.flatten() ,fileout = input_path+'OB_S_a_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIuice_south_all.flatten() ,fileout = input_path+'OB_S_uice_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIvice_south_all.flatten() ,fileout = input_path+'OB_S_vice_glorys_1993_2023.tnb',dtype ='float64')
+
+MIT.utils.write_to_binary(flatdata = T_east_all.flatten() ,fileout = input_path+'OB_E_t_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = S_east_all.flatten() ,fileout = input_path+'OB_E_s_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = U_east_all.flatten() ,fileout = input_path+'OB_E_u_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = V_east_all.flatten() ,fileout = input_path+'OB_E_v_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIheff_east_all.flatten() ,fileout = input_path+'OB_E_h_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIarea_east_all.flatten() ,fileout = input_path+'OB_E_a_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIuice_east_all.flatten() ,fileout = input_path+'OB_E_uice_glorys_1993_2023.tnb',dtype ='float64')
+MIT.utils.write_to_binary(flatdata = SIvice_east_all.flatten() ,fileout = input_path+'OB_E_vice_glorys_1993_2023.tnb',dtype ='float64')
+
+
+
+#%%
+
+
+#%%
+
+# swapping:
+    
+    
+data = np.swapaxes(S_south_all,0,1) 
+swap = np.swapaxes(data,1,2)
+swap.shape
+
+MIT.utils.write_to_binary(flatdata = swap.flatten() ,fileout = input_path+'test.tnb',dtype ='float64')
+
+    
+    
+tests = read_binary(input_path + 'OB_S_s_glorys_2015.tnb',grid_sizes=[600,56,12],dimensions='xzt',prec = 64,endian = 'big')
+print(tests.shape)
+plt.pcolor(tests[:,0,:])
